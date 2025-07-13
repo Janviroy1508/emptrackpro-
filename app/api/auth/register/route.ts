@@ -11,12 +11,28 @@ export async function POST(request: NextRequest) {
     const { email, password, userType } = await request.json()
 
     if (userType === "admin") {
+      // 🔒 ADMIN RESTRICTION: Check current admin count
+      const adminCount = await Admin.countDocuments()
+      console.log(`Current admin count: ${adminCount}`)
+
+      if (adminCount >= 2) {
+        return NextResponse.json(
+          {
+            message: "⚠️ Maximum admin limit reached! Only 2 admins are allowed in this system.",
+            currentAdmins: adminCount,
+            maxAllowed: 2,
+          },
+          { status: 403 },
+        )
+      }
+
       // Check if admin already exists
       const existingAdmin = await Admin.findOne({ email })
       if (existingAdmin) {
-        return NextResponse.json({ message: "Admin already exists" }, { status: 400 })
+        return NextResponse.json({ message: "Admin with this email already exists" }, { status: 400 })
       }
 
+      // Create new admin
       const hashedPassword = await bcrypt.hash(password, 12)
       const admin = new Admin({
         email,
@@ -24,10 +40,16 @@ export async function POST(request: NextRequest) {
       })
       await admin.save()
 
-      return NextResponse.json({ message: "Admin registration successful" })
+      const newAdminCount = await Admin.countDocuments()
+      console.log(`New admin created. Total admins: ${newAdminCount}`)
+
+      return NextResponse.json({
+        message: "✅ Admin registration successful!",
+        totalAdmins: newAdminCount,
+        remainingSlots: 2 - newAdminCount,
+      })
     } else {
-      // Employee registration
-      // Check if employee exists and doesn't have password yet
+      // Employee registration (unchanged)
       const existingEmployee = await Employee.findOne({ email })
 
       if (!existingEmployee) {
@@ -39,7 +61,6 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Check if employee already has password (already registered)
       if (existingEmployee.password) {
         return NextResponse.json(
           {
@@ -49,7 +70,6 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Update existing employee record with password
       const hashedPassword = await bcrypt.hash(password, 12)
       await Employee.findOneAndUpdate({ email }, { password: hashedPassword }, { new: true })
 
