@@ -1,80 +1,84 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { writeFile, mkdir } from "fs/promises"
-import { join } from "path"
-import { verifyToken } from "@/lib/auth"
-import { existsSync } from "fs"
+import bcrypt from "bcryptjs"
+import { connectDB } from "@/lib/mongodb"
+import Admin from "@/models/Admin"
+import Employee from "@/models/Employee"
 
 export async function POST(request: NextRequest) {
   try {
-    console.log("=== UPLOAD API CALLED ===")
+    await connectDB()
 
-    const user = await verifyToken(request)
-    if (!user || user.userType !== "admin") {
-      console.log("Unauthorized upload attempt")
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+    const { email, password, userType } = await request.json()
+
+    if (userType === "admin") {
+      // 🔒 ADMIN RESTRICTION: Check current admin count
+      const adminCount = await Admin.countDocuments()
+      console.log(`Current admin count: ${adminCount}`)
+
+      if (adminCount >= 2) {
+        return NextResponse.json(
+          {
+            message: "⚠️ Maximum admin limit reached! Only 2 admins are allowed in this system.",
+            currentAdmins: adminCount,
+            maxAllowed: 2,
+          },
+          { status: 403 },
+        )
+      }
+
+      // Check if admin already exists
+      const existingAdmin = await Admin.findOne({ email })
+      if (existingAdmin) {
+        return NextResponse.json({ message: "Admin with this email already exists" }, { status: 400 })
+      }
+
+      // Create new admin
+      const hashedPassword = await bcrypt.hash(password, 12)
+      const admin = new Admin({
+        email,
+        password: hashedPassword,
+      })
+      await admin.save()
+
+      const newAdminCount = await Admin.countDocuments()
+      console.log(`New admin created. Total admins: ${newAdminCount}`)
+
+      return NextResponse.json({
+        message: "✅ Admin registration successful!",
+        totalAdmins: newAdminCount,
+        remainingSlots: 2 - newAdminCount,
+      })
+    } else {
+      // Employee registration (unchanged)
+      const existingEmployee = await Employee.findOne({ email })
+
+      if (!existingEmployee) {
+        return NextResponse.json(
+          {
+            message: "Email not found. Please contact admin to add your email first.",
+          },
+          { status: 400 },
+        )
+      }
+
+      if (existingEmployee.password) {
+        return NextResponse.json(
+          {
+            message: "Employee already registered. Please login instead.",
+          },
+          { status: 400 },
+        )
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 12)
+      await Employee.findOneAndUpdate({ email }, { password: hashedPassword }, { new: true })
+
+      return NextResponse.json({ message: "Employee registration successful" })
     }
-
-    const data = await request.formData()
-    const file: File | null = data.get("photo") as unknown as File
-
-    if (!file) {
-      console.log("No file in request")
-      return NextResponse.json({ message: "No file uploaded" }, { status: 400 })
-    }
-
-    console.log("File received:", file.name, file.size, file.type)
-
-    // Check file size (5MB limit)
-    if (file.size > 5 * 1024 * 1024) {
-      return NextResponse.json({ message: "File size too large. Max 5MB allowed." }, { status: 400 })
-    }
-
-    // Check file type
-    if (!file.type.startsWith("image/")) {
-      return NextResponse.json({ message: "Only image files are allowed" }, { status: 400 })
-    }
-
-    const bytes = await file.arrayBuffer()
-    const buffer = Buffer.from(bytes)
-
-    // Create unique filename
-    const timestamp = Date.now()
-    const fileExtension = file.name.split(".").pop() || "jpg"
-    const filename = `${timestamp}-employee.${fileExtension}`
-
-    // Ensure uploads directory exists
-    const uploadsDir = join(process.cwd(), "public", "uploads")
-    console.log("Uploads directory:", uploadsDir)
-
-    if (!existsSync(uploadsDir)) {
-      console.log("Creating uploads directory...")
-      await mkdir(uploadsDir, { recursive: true })
-    }
-
-    const filePath = join(uploadsDir, filename)
-    console.log("Saving file to:", filePath)
-
-    await writeFile(filePath, buffer)
-    console.log("File saved successfully!")
-
-    const url = `/uploads/${filename}`
-    console.log("File URL:", url)
-
-    return NextResponse.json({
-      url,
-      message: "File uploaded successfully",
-      filename,
-      size: file.size,
-    })
-  } catch (error) {
-    console.error("=== UPLOAD ERROR ===")
-    console.error("Error:", error)
-    return NextResponse.json(
-      {
-        message: "Internal server error",
-        error: error.message,
-      },
-      { status: 500 },
-    )
+  } catch (error: unknown) {
+    // ⬅️ HERE IS THE CHANGE: Add ': unknown'
+    console.error("Registration error:", error)
+    // ⬅️ HERE IS THE CHANGE: Type assertion to access message property
+    return NextResponse.json({ message: (error as Error).message || "Internal server error" }, { status: 500 })
   }
 }
